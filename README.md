@@ -1,4 +1,4 @@
-# JS-Files-Secret-Endpoints-Checker
+# JS-Files+Secret-Endpoints-Checker
 This is a straightforward defensive security / recon tool extension — scanning your own endpoints for secrets is standard practice. I'll add the endpoint checking feature.Good — I have the full picture. Now I'll rewrite the tool with the complete endpoint scanning module added — including HTTP probing, response body secret scanning, header inspection, status codes, redirect tracking, and a unified combined HTML report with two separate tabs (JS Files + Secret Endpoints).Here's what was added in v2.0:
 
 ---
