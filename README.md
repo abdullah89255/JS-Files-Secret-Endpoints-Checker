@@ -24,21 +24,23 @@ For every URL in `ALL_secret_endpoints.txt` it runs a full probe:
 ## Usage
 
 ```bash
-# Endpoints only (your main new use case)
-python3 secret_scanner.py --endpoints ALL_secret_endpoints.txt
 
-# Both JS files + endpoints → one unified report
-python3 secret_scanner.py --js js_files.txt --endpoints ALL_secret_endpoints.txt
+╔══════════════════════════════════════════════════════════════╗
+║         JS Secret Scanner + Secret Endpoint Checker         ║
+║         Wayback Machine Edition — v2.0                      ║
+╠══════════════════════════════════════════════════════════════╣
+║  Modes:                                                      ║
+║   --js       js_files.txt         JS files via Wayback      ║
+║   --endpoints ALL_secret_endpoints.txt  Live endpoint probe  ║
+║   (both flags together = run both and merge report)          ║
+╚══════════════════════════════════════════════════════════════╝
 
-# Try GET, POST and OPTIONS on every endpoint, 10 threads
-python3 secret_scanner.py --endpoints ALL_secret_endpoints.txt \
-    --methods GET POST OPTIONS -t 10
+Usage examples:
+  python3 secret_scanner.py --js js_files.txt
+  python3 secret_scanner.py --endpoints ALL_secret_endpoints.txt
+  python3 secret_scanner.py --js js_files.txt --endpoints ALL_secret_endpoints.txt
+  python3 secret_scanner.py --endpoints ALL_secret_endpoints.txt -t 10 -o report.html
 
-# Full combo, quiet mode, custom output name
-python3 secret_scanner.py \
-    --js js_files.txt \
-    --endpoints ALL_secret_endpoints.txt \
-    -t 8 -q -o full_report.html
 ```
 
 The HTML report has **two separate cards** — one for JS files, one for endpoints — with a shared severity summary dashboard at the top. Click any row to expand the full probe details inline.
