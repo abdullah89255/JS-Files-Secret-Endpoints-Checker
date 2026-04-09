@@ -183,78 +183,202 @@ def redact(val):
     return val[:6] + "***"
 
 # ══════════════════════════════════════════════════════════════
-#  MODE 1 — JS FILES VIA WAYBACK MACHINE
+#  MODE 1 - JS FILES VIA WAYBACK MACHINE  (v3.0 - fixed CDX)
 # ══════════════════════════════════════════════════════════════
-WAYBACK_CDX  = "http://web.archive.org/cdx/search/cdx"
-WAYBACK_BASE = "http://web.archive.org/web"
+# Bugs fixed vs v2.0:
+#  BUG1: filter=statuscode:200 dropped captures stored with status '-' or '0'
+#  BUG2: collapse=digest too aggressive - only 1 snapshot per digest kept
+#  BUG3: limit=3 too low - missed snapshots that existed
+#  BUG4: No retry on CDX 429/503/timeout - returned [] silently
+#  BUG5: matchType not set - CDX used prefix match, missed exact URL
+#  BUG6: 'if_' modifier injected Wayback toolbar JS into scanned content
+#        Fix: use 'id_' (raw), fallback to 'if_' only if id_ fails
+#  BUG7: Single CDX query = 1 failure point, no fallback strategy
+#        Fix: 4-strategy cascade (strict->loose->raw->prefix)
+#  BUG8: except Exception: return [] hid all CDX errors silently
 
-def _req(url, timeout=15):
-    req = urllib.request.Request(url, headers={"User-Agent": "SecretScanner/2.0"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read().decode("utf-8", errors="replace")
+# MODE1_REPLACEMENT
+WAYBACK_CDX  = "https://web.archive.org/cdx/search/cdx"
+WAYBACK_BASE = "https://web.archive.org/web"
 
-def get_wayback_snapshots(url, limit=3):
-    params = urllib.parse.urlencode({
-        "url": url, "output": "json", "limit": limit,
-        "fl": "timestamp,statuscode,digest",
-        "filter": "statuscode:200", "collapse": "digest",
+CDX_DELAY   = 1.0
+FETCH_DELAY = 0.5
+
+
+def _req(url, timeout=20, retries=3):
+    headers = {
+        "User-Agent":      "Mozilla/5.0 (compatible; JSSecretScanner/3.0)",
+        "Accept-Encoding": "identity",
+        "Accept":          "*/*",
+    }
+    last_err = "unknown"
+    for attempt in range(retries):
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return r.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as e:
+            last_err = "HTTP %s" % e.code
+            if e.code in (429, 503, 502):
+                time.sleep(3 * (attempt + 1))
+                continue
+            raise
+        except (urllib.error.URLError, socket.timeout, OSError) as e:
+            last_err = str(e)
+            time.sleep(2 * (attempt + 1))
+    raise IOError("Failed after %d retries: %s" % (retries, last_err))
+
+
+def _cdx_query(url, extra=None):
+    params = {
+        "url":       url,
+        "output":    "json",
+        "fl":        "timestamp,statuscode",
+        "limit":     "10",
+        "matchType": "exact",
+    }
+    if extra:
+        params.update(extra)
+    cdx_url = WAYBACK_CDX + "?" + urllib.parse.urlencode(params)
+    try:
+        raw  = _req(cdx_url, timeout=20, retries=3)
+        data = json.loads(raw)
+        if not isinstance(data, list) or len(data) <= 1:
+            return []
+        return [(row[0], row[1]) for row in data[1:]]
+    except Exception as e:
+        return [("ERROR", str(e))]
+
+
+def get_wayback_snapshots(url):
+    msgs = []
+
+    # Strategy 1: exact + HTTP 200 + monthly dedup
+    rows = _cdx_query(url, {"filter": "statuscode:200", "collapse": "timestamp:8"})
+    errs = [sc for ts, sc in rows if ts == "ERROR"]
+    if errs:
+        msgs.append("CDX S1 error: %s" % errs[0])
+    ts1 = [ts for ts, sc in rows if ts != "ERROR"]
+    if ts1:
+        msgs.append("CDX strategy 1 (exact+200+collapse): %d snapshot(s)" % len(ts1))
+        return ts1, msgs
+    time.sleep(CDX_DELAY)
+
+    # Strategy 2: exact + any status + monthly dedup
+    rows = _cdx_query(url, {"collapse": "timestamp:8"})
+    errs = [sc for ts, sc in rows if ts == "ERROR"]
+    if errs:
+        msgs.append("CDX S2 error: %s" % errs[0])
+    ts2 = [ts for ts, sc in rows if ts != "ERROR" and sc not in ("-", "0", "")]
+    if ts2:
+        msgs.append("CDX strategy 2 (exact+any status): %d snapshot(s)" % len(ts2))
+        return ts2, msgs
+    time.sleep(CDX_DELAY)
+
+    # Strategy 3: exact + no filter + no collapse
+    rows = _cdx_query(url, {"limit": "5"})
+    errs = [sc for ts, sc in rows if ts == "ERROR"]
+    if errs:
+        msgs.append("CDX S3 error: %s" % errs[0])
+    ts3 = [ts for ts, sc in rows if ts != "ERROR"]
+    if ts3:
+        msgs.append("CDX strategy 3 (exact+no filter): %d snapshot(s)" % len(ts3))
+        return ts3, msgs
+    time.sleep(CDX_DELAY)
+
+    # Strategy 4: prefix match
+    rows = _cdx_query(url, {
+        "matchType": "prefix",
+        "filter":    "statuscode:200",
+        "collapse":  "urlkey",
+        "limit":     "5",
     })
-    try:
-        data = json.loads(_req(f"{WAYBACK_CDX}?{params}"))
-        return [row[0] for row in data[1:]] if len(data) > 1 else []
-    except Exception:
-        return []
+    errs = [sc for ts, sc in rows if ts == "ERROR"]
+    if errs:
+        msgs.append("CDX S4 error: %s" % errs[0])
+    ts4 = [ts for ts, sc in rows if ts != "ERROR"]
+    if ts4:
+        msgs.append("CDX strategy 4 (prefix): %d snapshot(s)" % len(ts4))
+        return ts4, msgs
 
-def fetch_wayback_content(url, timestamp):
-    wb_url = f"{WAYBACK_BASE}/{timestamp}if_/{url}"
-    try:
-        return _req(wb_url, timeout=20), wb_url
-    except Exception:
-        return None, wb_url
+    msgs.append("All 4 CDX strategies returned 0 snapshots")
+    return [], msgs
+
+
+def fetch_wayback_content(original_url, timestamp):
+    # id_ = raw content (no toolbar injection)  -- FIX: was if_ which injects Wayback JS
+    # if_ = with toolbar                        -- fallback only
+    wb_id = "%s/%sid_/%s" % (WAYBACK_BASE, timestamp, original_url)
+    wb_if = "%s/%sif_/%s" % (WAYBACK_BASE, timestamp, original_url)
+
+    for wb_url in (wb_id, wb_if):
+        try:
+            content = _req(wb_url, timeout=30, retries=2)
+            if not content or len(content) < 10:
+                continue
+            c_start = content[:500].lower()
+            if "<html" in c_start and "wayback machine" in c_start:
+                continue
+            return content, wb_url
+        except Exception:
+            continue
+    return None, wb_id
+
 
 def fetch_direct(url):
     try:
-        return _req(url, timeout=15)
+        return _req(url, timeout=15, retries=2)
     except Exception:
         return None
+
 
 def process_js_url(url, results_store, lock, verbose=True):
     url = url.strip()
     if not url or url.startswith("#"):
         return
-    entry = {"url": url, "snapshots": [], "findings": [], "errors": [], "status": "pending", "mode": "js"}
-    if verbose:
-        print(f"  [JS] {url}")
 
-    timestamps = get_wayback_snapshots(url, limit=3)
-    time.sleep(0.4)
+    entry = {
+        "url":       url,
+        "snapshots": [],
+        "findings":  [],
+        "errors":    [],
+        "status":    "pending",
+        "mode":      "js",
+    }
+
+    if verbose:
+        print("  [JS] %s" % url)
+
+    timestamps, cdx_msgs = get_wayback_snapshots(url)
+    entry["errors"].extend(cdx_msgs)
+    time.sleep(FETCH_DELAY)
 
     if not timestamps:
-        entry["errors"].append("No Wayback snapshots — trying direct fetch")
+        entry["errors"].append("No snapshots - trying live fetch")
         content = fetch_direct(url)
         if content:
             entry["snapshots"].append({"timestamp": "live", "wb_url": url})
             entry["findings"] = scan_content(content, url)
-            entry["status"] = "scanned_direct"
+            entry["status"]   = "scanned_direct"
         else:
             entry["status"] = "no_snapshot"
-            entry["errors"].append("Direct fetch also failed")
+            entry["errors"].append("Live fetch also failed")
     else:
-        for ts in timestamps:
+        for ts in timestamps[:5]:
             content, wb_url = fetch_wayback_content(url, ts)
-            time.sleep(0.3)
+            time.sleep(FETCH_DELAY)
             snap = {"timestamp": ts, "wb_url": wb_url}
             if content:
-                new_findings = scan_content(content, wb_url)
+                new_findings          = scan_content(content, wb_url)
                 snap["finding_count"] = len(new_findings)
+                snap["bytes"]         = len(content)
                 entry["findings"].extend(new_findings)
                 entry["status"] = "scanned"
             else:
                 snap["finding_count"] = 0
-                entry["errors"].append(f"Snapshot {ts} fetch failed")
+                entry["errors"].append("Snapshot %s: id_ and if_ both failed" % ts)
             entry["snapshots"].append(snap)
 
-    # final dedup across all snapshots
     seen, deduped = set(), []
     for f in entry["findings"]:
         k = (f["pattern"], f["matched"])
@@ -264,8 +388,13 @@ def process_js_url(url, results_store, lock, verbose=True):
     entry["findings"] = deduped
 
     if verbose:
-        cnt = len(entry["findings"])
-        print(f"      {'⚠  ' + str(cnt) + ' findings' if cnt else '✓  clean'}  [{entry['status']}]")
+        cnt   = len(entry["findings"])
+        snaps = len([s for s in entry["snapshots"]
+                     if s.get("bytes", 0) > 0 or s.get("timestamp") == "live"])
+        tag   = "!  %d findings" % cnt if cnt else "v  clean"
+        strat = next((m for m in entry["errors"] if "strategy" in m.lower()), "")
+        extra = "  [%s]" % strat if strat else ""
+        print("      %s  [%s]  %d snapshot(s)%s" % (tag, entry["status"], snaps, extra))
 
     with lock:
         results_store.append(entry)
