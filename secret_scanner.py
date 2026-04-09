@@ -11,10 +11,10 @@
 ╚══════════════════════════════════════════════════════════════╝
 
 Usage examples:
-  python3 js_secret_scanner.py --js js_files.txt
-  python3 js_secret_scanner.py --endpoints ALL_secret_endpoints.txt
-  python3 js_secret_scanner.py --js js_files.txt --endpoints ALL_secret_endpoints.txt
-  python3 js_secret_scanner.py --endpoints ALL_secret_endpoints.txt -t 10 -o report.html
+  python3 secret_scanner.py --js js_files.txt
+  python3 secret_scanner.py --endpoints ALL_secret_endpoints.txt
+  python3 secret_scanner.py --js js_files.txt --endpoints ALL_secret_endpoints.txt
+  python3 secret_scanner.py --endpoints ALL_secret_endpoints.txt -t 10 -o report.html
 """
 
 import re, sys, time, json, argparse, threading, socket
